@@ -14,7 +14,7 @@ import re
 logging.basicConfig(filename='scrape.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def scrape_voa(output_file, root_url='https://www.voashona.com/nhau-dzezimbabwe', page_number = 0):
+def scrape_voa(output_file: str, root_url='https://www.voashona.com/nhau-dzezimbabwe': str, page_number = 0) -> None:
     url = root_url
 
     n = 0
