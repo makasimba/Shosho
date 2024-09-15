@@ -2,24 +2,26 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 import logging
-import csv
 from datetime import datetime
-import re
 import boto3
 from botocore.exceptions import ClientError
 import requests
 from requests.exceptions import HTTPError
-from pprint import pprint as pp
-import time
-import random
 import json
 import os
+import random
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # load environment variables from .env
+
 ROOT_URL = os.getenv('ROOT_URL')
 LOG_FILE = os.getenv('LOG_FILE')
+BUCKET_NAME = os.getenv('BUCKET')
+CHECKPOINT_FILE = os.getenv('CHECKPOINT_FILE')
+OUTPUT_FILE = os.getenv('OUTPUT_FILE')
+
+s3_client = boto3.client('s3')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -36,8 +38,6 @@ sh.setLevel(logging.INFO)
 sh.setFormatter(formatter)
 logger.addHandler(sh)
 
-CHECKPOINT_FILE = os.getenv('CHECKPOINT_FILE')
-OUTPUT_FILE = os.getenv('OUTPUT_FILE')
 
 def save_checkpoint(ckpt: int) -> None:
     with open(CHECKPOINT_FILE, mode='w', encoding='utf-8') as fout:
@@ -53,26 +53,19 @@ def load_checkpoint() -> int:
         logger.info('Checkpoint not found. Returning zero.')
         return 0
 
-def load_url(number):
-    return f'{ROOT_URL}?page={number}'
+def load_url(x):
+    return f'{ROOT_URL}?page={x}'
 
-def convert_to_data_object(article_data):
-    return {}
-
-@retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((HTTPError, ConnectionError, requests.exceptions.RequestException)),
-        reraise=True,
-)
 async def fetch(session, url):
     async with session.get(url) as response:
         return await response.text(encoding='utf-8')
 
-def get_article_content(article_soup):
+def extract_content(article_soup):
     wsw_div = article_soup.find('div', class_='wsw')
     if wsw_div:
         article_paragraphs = [p.get_text(strip=True) for p in wsw_div.find_all('p')]
+    else:
+        return ''
     return '\n'.join(article_paragraphs)
 
 @retry(
@@ -83,32 +76,40 @@ def get_article_content(article_soup):
 )
 async def scrape_article(session, article_url):
     try:
+        # fetch article HTML
         article_html = await fetch(session, article_url)
         article_soup = BeautifulSoup(article_html, 'lxml')
         
         article_date = article_soup.find('div', class_='published').find('span', class_='date').find('time').get('datetime')
         article_title = article_soup.find('h1', class_=['title', 'pg-title']).text.strip()
+        scrape_date = datetime.now().strftime(r'%d, %m %Y, %H:%M:%S')
         
-        # Extract article content
         try:
-            article_content = get_article_content(article_soup)
-        except AttributeError as e:
+            # Extract article content
+            article_content = extract_content(article_soup)
+        except Exception as e:
             logger.error(f'Error parsing article, {article_url}, text: {e}')
         
-        scrape_date = datetime.now().strftime(r'%d, %m %Y, %H:%M:%S')
-
+        # Return article data
         return {'scrape_date': scrape_date, 'article_url': article_url, 'article_date': article_date, 'article_title': article_title, 'article_content': article_content}
     except Exception as e:
         logging.error(f'Error fetching article {article_url}: {e}')
         return None
+    
+async def upload_to_bucket(data, bucket, key):
+    try:
+        s3_client.put_object(Body=data, Bucket=bucket, Key=key)
+        logger.info(f'Successfully uploaded {key} to {bucket}')
+    except ClientError as e:
+        logger.error(f'Error uploading {key} to {bucket}: {e}')
 
-async def scrape(output_file: str, root_url: str) -> None:
+async def scrape(articles_per_file: int = 10) -> None:
     ckpt = load_checkpoint()
-    url = load_url(ckpt)  # has links to actual news articles
+    url = load_url(ckpt)  # has multiple links to actual news articles on this url
 
     async with aiohttp.ClientSession() as session:
-        # TODO: REMOVE N PLEASE
-        n = 0
+        articles_batch = []
+
         while True:
             try:
                 webpage_html = await fetch(session, url)
@@ -126,10 +127,15 @@ async def scrape(output_file: str, root_url: str) -> None:
                 articles_data = await asyncio.gather(*article_tasks)
                 articles_data = [article for article in articles_data if article is not None]
                 
-                # TODO: Implement S3 upload instead of local file write
-                with open(output_file, 'a', newline='') as fout:
-                    for article_data in articles_data:
-                        fout.write(json.dumps(article_data, ensure_ascii=False) + '\n')
+                articles_batch.extend(articles_data)
+
+                if len(articles_data) >= articles_per_file:
+                    batch_data = articles_batch[:articles_per_file]
+                    articles_batch = articles_batch[articles_per_file:]
+
+                    key = f'articles/{ckpt: 07}.json'
+                    data='\n'.join(json.dumps(article, ensure_ascii=False) for article in batch_data)
+                    await upload_to_bucket(data=data, bucket=BUCKET_NAME, key=key)
 
                 logger.info(f'Page {ckpt} scraped successfully.')
                 save_checkpoint(ckpt)
@@ -141,19 +147,20 @@ async def scrape(output_file: str, root_url: str) -> None:
                 if load_more:
                     logger.info('Loading next page.')
                     ckpt += 1
+                    if ckpt >= 5: break
                     url = load_url(ckpt)
+
+                    # basic waiting to simulate browsing
+                    wait_for = random.uniform(2, 5)
+                    logger.info(f'Waiting for {wait_for:.2f} seconds before loading next page.')
+                    await asyncio.sleep(wait_for)
                 else:
                     logger.info('Next page not found. Exiting.')
                     break
-            n += 1
-            if n >= 5:
-                break
 
 if __name__ == '__main__':
     output_file = OUTPUT_FILE
     root_url = ROOT_URL
 
-    # TODO: Implement S3 bucket initialization
-
-    asyncio.run(scrape(output_file=output_file, root_url=root_url))
+    asyncio.run(scrape())
     logger.info('VOA crawling completed.')

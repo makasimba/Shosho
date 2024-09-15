@@ -1,0 +1,6 @@
+aiohttp
+beautifulsoup4
+boto3
+requests
+tenacity
+python-dotenv
