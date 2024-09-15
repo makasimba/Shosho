@@ -20,8 +20,9 @@ LOG_FILE = os.getenv('LOG_FILE')
 BUCKET_NAME = os.getenv('BUCKET')
 CHECKPOINT_FILE = os.getenv('CHECKPOINT_FILE')
 OUTPUT_FILE = os.getenv('OUTPUT_FILE')
+REGION = os.getenv('REGION')
 
-s3_client = boto3.client('s3')
+s3_client = boto3.client('s3', region_name=REGION)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

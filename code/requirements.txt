@@ -4,3 +4,4 @@ boto3
 requests
 tenacity
 python-dotenv
+lxml
