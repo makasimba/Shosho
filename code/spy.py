@@ -19,7 +19,6 @@ ROOT_URL = os.getenv('ROOT_URL')
 LOG_FILE = os.getenv('LOG_FILE')
 BUCKET_NAME = os.getenv('BUCKET')
 CHECKPOINT_FILE = os.getenv('CHECKPOINT_FILE')
-OUTPUT_FILE = os.getenv('OUTPUT_FILE')
 REGION = os.getenv('REGION')
 
 s3_client = boto3.client('s3', region_name=REGION)
@@ -27,7 +26,7 @@ s3_client = boto3.client('s3', region_name=REGION)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s -- %(name)s -- %(levelname)s -- %(message)s')
 
 fh = logging.FileHandler(LOG_FILE)
 fh.setLevel(logging.DEBUG)
@@ -134,7 +133,7 @@ async def scrape(articles_per_file: int = 10) -> None:
                     batch_data = articles_batch[:articles_per_file]
                     articles_batch = articles_batch[articles_per_file:]
 
-                    key = f'articles/{ckpt: 07}.json'
+                    key = f'DATA/{ckpt: 07}.json'
                     data='\n'.join(json.dumps(article, ensure_ascii=False) for article in batch_data)
                     await upload_to_bucket(data=data, bucket=BUCKET_NAME, key=key)
 
@@ -148,11 +147,10 @@ async def scrape(articles_per_file: int = 10) -> None:
                 if load_more:
                     logger.info('Loading next page.')
                     ckpt += 1
-                    if ckpt >= 5: break
                     url = load_url(ckpt)
 
-                    # basic waiting to simulate browsing
-                    wait_for = random.uniform(2, 5)
+                    # simulate basic human-like browsing and avoid getting blocked
+                    wait_for = random.uniform(2, 7)
                     logger.info(f'Waiting for {wait_for:.2f} seconds before loading next page.')
                     await asyncio.sleep(wait_for)
                 else:
@@ -160,8 +158,5 @@ async def scrape(articles_per_file: int = 10) -> None:
                     break
 
 if __name__ == '__main__':
-    output_file = OUTPUT_FILE
-    root_url = ROOT_URL
-
     asyncio.run(scrape())
-    logger.info('VOA crawling completed.')
+    logger.info('crawling completed.')
