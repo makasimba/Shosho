@@ -9,6 +9,7 @@ import requests
 from requests.exceptions import HTTPError
 import json
 import os
+import re
 import random
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
@@ -39,19 +40,25 @@ sh.setFormatter(formatter)
 logger.addHandler(sh)
 
 
-def save_checkpoint(ckpt: int) -> None:
+def save_checkpoint(ckpt: int, total_tokens: int) -> None:
     with open(CHECKPOINT_FILE, mode='w', encoding='utf-8') as fout:
-        json.dump({'ckpt': ckpt}, fout)
+        json.dump({'ckpt': ckpt, 'total_tokens': total_tokens}, fout)
+        
 
 def load_checkpoint() -> int:
     try:
         with open(CHECKPOINT_FILE, mode='r', encoding='utf-8') as f:
-            ckpt = json.load(f)['ckpt']
-            logger.info(f'Checkpoint {ckpt} found.')
+            d = json.load(f)
+
+            ckpt = d['ckpt']
+            total_tokens = d['total_tokens']
+
+            logger.info(f'Checkpoint found: {ckpt}')
+            logger.info(f'Total tokens:  {total_tokens}')
             return ckpt + 1
     except FileNotFoundError:
-        logger.info('Checkpoint not found. Returning zero.')
-        return 0
+        logger.info('Checkpoint not found.')
+        return 0, 0
 
 def load_url(x):
     return f'{ROOT_URL}?page={x}'
@@ -95,7 +102,7 @@ async def scrape_article(session, article_url):
     except Exception as e:
         logging.error(f'Error fetching article {article_url}: {e}')
         return None
-    
+
 async def upload_to_bucket(data, bucket, key):
     try:
         s3_client.put_object(Body=data, Bucket=bucket, Key=key)
@@ -104,7 +111,7 @@ async def upload_to_bucket(data, bucket, key):
         logger.error(f'Error uploading {key} to {bucket}: {e}')
 
 async def scrape(articles_per_file: int = 10) -> None:
-    ckpt = load_checkpoint()
+    ckpt, total_tokens = load_checkpoint()
     url = load_url(ckpt)  # has multiple links to actual news articles on this url
 
     async with aiohttp.ClientSession() as session:
@@ -126,7 +133,7 @@ async def scrape(articles_per_file: int = 10) -> None:
                 
                 articles_data = await asyncio.gather(*article_tasks)
                 articles_data = [article for article in articles_data if article is not None]
-                
+                total_tokens += sum(len(article['article_content'].split()) for article in articles_data)
                 articles_batch.extend(articles_data)
 
                 if len(articles_data) >= articles_per_file:
@@ -138,7 +145,8 @@ async def scrape(articles_per_file: int = 10) -> None:
                     await upload_to_bucket(data=data, bucket=BUCKET_NAME, key=key)
 
                 logger.info(f'Page {ckpt} scraped successfully.')
-                save_checkpoint(ckpt)
+                logger.info(f'Estimated scraped total tokens: {total_tokens}')
+                save_checkpoint(ckpt, total_tokens)
             except Exception as e:
                 logger.error(f'Error processing page = {ckpt}, url = {url}: {e}')
                 break
@@ -160,3 +168,6 @@ async def scrape(articles_per_file: int = 10) -> None:
 if __name__ == '__main__':
     asyncio.run(scrape())
     logger.info('crawling completed.')
+
+# TODO: Keep and log number of tokens collected
+# TODO: Attach a notify service to this script
